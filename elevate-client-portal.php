@@ -3,21 +3,21 @@
 /**
  * Plugin Name:       Elevate Client Portal
  * Description:       A private portal for clients to download files uploaded by an administrator.
- * Version:           74.0.0 (Singleton Fix)
+ * Version:           96.0.0 (ZIP Cleanup Cron)
  * Author:            Elevate Agency Ltd
  * Author URI:        https://www.elevatedigital.agency/
  * License:           GPL v2 or later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       ecp
  * Domain Path:       /languages
- * @comment Fixed a fatal error by correctly implementing the Singleton pattern in all AJAX handler classes, ensuring stable initialization.
+ * @comment Added a WP-Cron task to automatically clean up expired temporary ZIP files every hour.
  */
 
 if ( ! defined( 'WPINC' ) ) {
     die;
 }
 
-define( 'ECP_VERSION', '74.0.0' );
+define( 'ECP_VERSION', '96.0.0' );
 define( 'ECP_PLUGIN_PATH', plugin_dir_path( __FILE__ ) );
 define( 'ECP_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
@@ -34,6 +34,7 @@ final class Elevate_Client_Portal_Init {
 
     private function __construct() {
         register_activation_hook( __FILE__, [ $this, 'activate' ] );
+        register_deactivation_hook( __FILE__, [ $this, 'deactivate' ] );
         add_action('plugins_loaded', [ $this, 'init_plugin' ]);
     }
 
@@ -57,6 +58,8 @@ final class Elevate_Client_Portal_Init {
             'includes/class-ecp-s3.php',
             'admin/includes/class-ecp-file-helper.php',
             'includes/class-ecp-asset-manager.php',
+            'includes/asset-loaders/class-ecp-admin-dashboard-assets.php',
+            'includes/asset-loaders/class-ecp-client-portal-assets.php',
             'includes/class-ecp-auth-handler.php',
             'includes/class-ecp-download-handler.php',
             'includes/download-handlers/class-ecp-standard-file-handler.php',
@@ -64,6 +67,7 @@ final class Elevate_Client_Portal_Init {
             'includes/download-handlers/class-ecp-zip-file-handler.php',
             'includes/class-ecp-shortcodes.php',
             'includes/class-ecp-audit-log.php',
+            'includes/class-ecp-cron-handler.php', 
             'admin/class-ecp-admin.php',
             'admin/class-ecp-settings.php',
             'admin/includes/class-ecp-user-manager.php',
@@ -94,8 +98,8 @@ final class Elevate_Client_Portal_Init {
         ECP_Login::get_instance( ECP_PLUGIN_PATH, ECP_PLUGIN_URL );
         ECP_Impersonation_Handler::get_instance();
         ECP_Audit_Log::get_instance();
+        ECP_Cron_Handler::get_instance();
 
-        // ** FIX: Use the correct get_instance() method for all AJAX handlers. **
         ECP_Admin_Ajax_Handler::get_instance();
         ECP_Ajax_File_Manager::get_instance();
         ECP_Client_Portal_Ajax_Handler::get_instance();
@@ -108,6 +112,14 @@ final class Elevate_Client_Portal_Init {
     public function activate() {
         require_once ECP_PLUGIN_PATH . 'includes/class-ecp-audit-log.php';
         ECP_Audit_Log::create_table();
+        
+        require_once ECP_PLUGIN_PATH . 'includes/class-ecp-cron-handler.php';
+        ECP_Cron_Handler::schedule_events();
+    }
+    
+    public function deactivate() {
+        require_once ECP_PLUGIN_PATH . 'includes/class-ecp-cron-handler.php';
+        ECP_Cron_Handler::unschedule_events();
     }
 }
 
