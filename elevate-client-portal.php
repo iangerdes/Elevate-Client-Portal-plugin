@@ -92,7 +92,7 @@ final class Elevate_Client_Portal_Init {
 
         $this->load_dependencies();
         
-        ECP_User_Manager::register_custom_roles();
+        //ECP_User_Manager::register_custom_roles();
 
         $this->init_components();
     }
