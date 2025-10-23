@@ -4,7 +4,8 @@
  * A helper class for retrieving and formatting file data.
  *
  * @package Elevate_Client_Portal
- * @version 18.1.0 (Refactored File Authorization)
+ * @version 14.1.0 (Admin View Refinement)
+ * @comment Added hydrate_specific_files method to hydrate only a given list, used to separate admin's single-user view from client view.
  */
 
 if ( ! defined( 'WPINC' ) ) {
@@ -17,55 +18,6 @@ if ( ! defined( 'WPINC' ) ) {
  * Provides static methods for fetching and processing file lists from the database and S3.
  */
 class ECP_File_Helper {
-
-    /**
-     * Finds, authorizes, and returns file data for a download request.
-     * This version refactors the logic to be more robust for all user types.
-     *
-     * @param string $file_key The unique identifier for the file (S3 key or hash).
-     * @param int $target_user_id The user context for the download. 0 for "All Users". Can be set by an admin.
-     * @return array|WP_Error The file's metadata array on success, or a WP_Error on failure.
-     */
-    public static function find_and_authorize_file( $file_key, $target_user_id ) {
-        if ( ! is_user_logged_in() ) {
-            return new WP_Error( 'not_logged_in', 'You must be logged in to download files.' );
-        }
-
-        $current_user_id = get_current_user_id();
-        $is_admin = current_user_can('edit_users');
-        $user_context_id = ($is_admin && $target_user_id > 0) ? $target_user_id : $current_user_id;
-
-        // First, search in the specified user's files.
-        $found_file = self::find_file_by_hash( $file_key, $user_context_id, false );
-
-        // If not found, and it's not an admin looking at a specific user, check "All Users" files.
-        if ( ! $found_file ) {
-             $found_file = self::find_file_by_hash( $file_key, 0, false );
-        }
-    
-        if ( ! $found_file ) {
-            return new WP_Error( 'not_found', 'File not found or permission denied.' );
-        }
-    
-        $file_data     = $found_file['original_data'];
-        $file_owner_id = $found_file['user_id'];
-    
-        // If the current user is NOT an admin, enforce ownership rules.
-        if ( ! $is_admin ) {
-            $is_own_file       = ($file_owner_id == $current_user_id);
-            $is_all_users_file = ($file_owner_id == 0);
-            
-            if ( ! $is_own_file && ! $is_all_users_file ) {
-                return new WP_Error( 'permission_denied', 'You do not have permission to download this file.' );
-            }
-            if ( $is_all_users_file && in_array( $current_user_id, $file_data['excluded_users'] ?? [] ) ) {
-                return new WP_Error( 'permission_denied', 'You do not have permission to download this file.' );
-            }
-        }
-    
-        return $file_data;
-    }
-
 
     /**
      * Finds a specific file by its unique hash/key for a given user context.
@@ -92,7 +44,7 @@ class ECP_File_Helper {
             $all_users_files = get_option( '_ecp_all_users_files', [] );
             if ( ! empty( $all_users_files ) ) {
                 foreach ( $all_users_files as $file_data ) {
-                    if (!is_array($file_data)) continue;
+                     if (!is_array($file_data)) continue;
                     $current_key = $file_data['s3_key'] ?? (isset($file_data['path']) ? md5($file_data['path']) : '');
                     if ( $current_key === $hash ) {
                         return [ 'user_id' => 0, 'original_data' => $file_data ];
@@ -106,7 +58,7 @@ class ECP_File_Helper {
             $all_users_files = get_option( '_ecp_all_users_files', [] );
              if ( ! empty( $all_users_files ) ) {
                 foreach ( $all_users_files as $file_data ) {
-                    if (!is_array($file_data)) continue;
+                     if (!is_array($file_data)) continue;
                     $current_key = $file_data['s3_key'] ?? (isset($file_data['path']) ? md5($file_data['path']) : '');
                     if ( $current_key === $hash ) {
                         return [ 'user_id' => 0, 'original_data' => $file_data ];
@@ -119,8 +71,62 @@ class ECP_File_Helper {
     }
 
     /**
-     * Gets a complete list of files for a specific user, combining their personal files
-     * and any non-excluded "All Users" files, then hydrates them with metadata.
+     * Finds a file and verifies the current user has permission to access it.
+     *
+     * @param string $file_key       The file's unique identifier.
+     * @param int    $target_user_id The user context for the download (0 for All Users).
+     * @return array|WP_Error The file data array if authorized, otherwise a WP_Error object.
+     */
+    public static function find_and_authorize_file( $file_key, $target_user_id ) {
+        if ( ! is_user_logged_in() ) {
+            return new WP_Error( 'not_logged_in', 'You must be logged in to download files.' );
+        }
+    
+        $current_user_id = get_current_user_id();
+        $is_admin = current_user_can('edit_users');
+        
+        // Determine the correct user context to search within.
+        $user_context_id = ($is_admin && $target_user_id !== 0) ? $target_user_id : $current_user_id;
+        if ($target_user_id === 0) { // Check specifically for "All Users" context
+             $user_context_id = 0;
+        }
+        
+        // Search primarily in the context, then fallback to "All Users" if allowed/needed.
+        $found_file = self::find_file_by_hash( $file_key, $user_context_id, true );
+    
+        if ( ! $found_file ) {
+            return new WP_Error( 'not_found', 'File not found or permission denied.' );
+        }
+    
+        $file_data = $found_file['original_data'];
+        $file_owner_id = $found_file['user_id'];
+    
+        // If the current user is not an admin, enforce ownership rules.
+        if ( ! $is_admin ) {
+            $is_own_file = ($file_owner_id == $current_user_id);
+            $is_all_users_file = ($file_owner_id == 0);
+            
+            if ( ! $is_own_file && ! $is_all_users_file ) {
+                return new WP_Error( 'permission_denied', 'You do not have permission to download this file.' );
+            }
+            // Check if they are excluded from an "All Users" file.
+            if ( $is_all_users_file && in_array( $current_user_id, $file_data['excluded_users'] ?? [] ) ) {
+                 return new WP_Error( 'permission_denied', 'You do not have permission to download this file.' );
+            }
+        }
+    
+        // Admins viewing a specific user's file list should still respect the target context
+        if ($is_admin && $target_user_id !== 0 && $file_owner_id != $target_user_id && $file_owner_id != 0) {
+             return new WP_Error( 'permission_denied', 'File does not belong to the targeted user or All Users.' );
+        }
+
+        return $file_data;
+    }
+
+    /**
+     * Gets a complete list of files for a specific user FOR THE CLIENT PORTAL VIEW,
+     * combining their personal files and any non-excluded "All Users" files,
+     * then hydrates them with metadata.
      *
      * @param int $user_id The ID of the user.
      * @return array An array of hydrated file data.
@@ -129,10 +135,12 @@ class ECP_File_Helper {
         $user_files      = get_user_meta( $user_id, '_ecp_client_file', false );
         $all_users_files = get_option( '_ecp_all_users_files', [] );
 
+        // Filter "All Users" files to exclude those the user shouldn't see
         $available_all_users_files = array_filter( $all_users_files, function( $file ) use ( $user_id ) {
             return ! in_array( $user_id, $file['excluded_users'] ?? [] );
         });
 
+        // Merge personal files and available global files
         $merged_files = array_merge( is_array( $user_files ) ? $user_files : [], is_array( $available_all_users_files ) ? $available_all_users_files : [] );
 
         return self::hydrate_files( $merged_files );
@@ -149,6 +157,18 @@ class ECP_File_Helper {
     }
 
     /**
+     * Hydrates a specific list of file arrays with live metadata (size, timestamp).
+     * This is a public wrapper around the private hydrate_files method.
+     *
+     * @param array $files An array of file data (e.g., from user meta).
+     * @return array The hydrated array of files.
+     */
+    public static function hydrate_specific_files( $files ) {
+        return self::hydrate_files( is_array($files) ? $files : [] );
+    }
+
+
+    /**
      * Hydrates a list of file arrays with live metadata (size, timestamp) from
      * either the local filesystem or Amazon S3.
      *
@@ -163,17 +183,23 @@ class ECP_File_Helper {
             if ( ! is_array( $file_data ) ) continue;
 
             $file_data['size'] = 0;
-            $file_data['timestamp'] = time();
+            $file_data['timestamp'] = time(); // Default timestamp
 
             if ( ! empty( $file_data['s3_key'] ) && $s3_handler->is_s3_enabled() ) {
                 $metadata = $s3_handler->get_file_metadata( $file_data['s3_key'] );
                 if ( ! is_wp_error( $metadata ) ) {
                     $file_data['size'] = $metadata['size'];
                     $file_data['timestamp'] = $metadata['timestamp'];
+                } else {
+                     // Log or handle S3 metadata error if needed
+                    // error_log('S3 Metadata Error for key ' . $file_data['s3_key'] . ': ' . $metadata->get_error_message());
                 }
             } elseif ( ! empty( $file_data['path'] ) && file_exists( $file_data['path'] ) ) {
                 $file_data['size'] = filesize( $file_data['path'] );
                 $file_data['timestamp'] = filemtime( $file_data['path'] );
+            } else {
+                 // Log or handle missing local file if needed
+                // if (!empty($file_data['path'])) error_log('Local file not found: ' . $file_data['path']);
             }
             $hydrated_files[] = $file_data;
         }
